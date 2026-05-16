@@ -103,18 +103,22 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Update documents matching a filter.
    * Returns the number of updated documents.
    */
+  
   async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
-    return wrapIDBOperation(
+  const matches = await this.find(filter);
+  const now = Date.now();
+
+  try {
+    await this.table.bulkPut(matches.map((doc) => this.applyUpdateSpec(doc, spec, now)));
+    return matches.length;
+  } catch (err) {
+    throw new ZerithDBError(
       ErrorCode.DB_WRITE_FAILED,
       `Failed to update documents in "${this.collectionName}"`,
-      async () => {
-        const matches = await this.find(filter);
-        const now = Date.now();
-        await this.table.bulkPut(matches.map((doc) => this.applyUpdateSpec(doc, spec, now)));
-        return matches.length;
-      }
+      { cause: err }
     );
   }
+}
 
   /**
    * Delete documents matching a filter.
