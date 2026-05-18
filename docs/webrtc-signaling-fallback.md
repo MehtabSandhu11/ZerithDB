@@ -153,6 +153,45 @@ docker run -p 4000:4000 zerithdb/signal-server
 Self-hosted servers give you full control over uptime and can be placed in multiple regions for
 geographic redundancy.
 
+### Proof-of-Work Handshake Protection
+
+The self-hosted signaling server requires a lightweight Hashcash proof-of-work solution before a
+peer can join a room. This makes large Sybil floods expensive while keeping verification cheap for
+the server.
+
+The browser SDK handles this automatically:
+
+1. Fetch `GET /pow/challenge?room=<roomId>&peer=<peerId>`.
+2. Solve the returned `hashcash-sha256` challenge locally.
+3. Attach the solution to the WebSocket join URL as `powChallenge` and `powNonce`, or to
+   `POST /poll/join` as `{ "pow": { "challenge": "...", "nonce": "..." } }`.
+
+Example direct WebSocket join:
+
+```text
+wss://signal.example.com?room=my-room&peer=peer-123&powChallenge=<challenge>&powNonce=<nonce>
+```
+
+Operator tuning:
+
+| Variable               | Default | Purpose                                                  |
+| ---------------------- | ------- | -------------------------------------------------------- |
+| `POW_ENABLED`          | `true`  | Set to `false` only for trusted local development        |
+| `POW_BASE_DIFFICULTY`  | `12`    | Baseline leading-zero bits required                      |
+| `POW_MAX_DIFFICULTY`   | `24`    | Upper bound for automatic scaling                        |
+| `POW_LOAD_STEP`        | `25`    | Add one difficulty bit per N active peers                |
+| `POW_THREAT_LEVEL`     | `0`     | Manual threat bump; each level adds two difficulty bits  |
+| `POW_CHALLENGE_TTL_MS` | `60000` | Challenge expiration window                              |
+| `POW_SECRET`           | random  | HMAC secret for challenge integrity; set in multi-region |
+
+Performance notes:
+
+- Server verification performs one HMAC check and one SHA-256 digest, then records the solution in a
+  TTL-bound replay cache.
+- Default difficulty is intentionally low so normal joins complete quickly on common browsers.
+- During an attack, raise `POW_THREAT_LEVEL` or lower `POW_LOAD_STEP` to increase client CPU cost
+  without increasing server-side verification cost.
+
 ---
 
 ## Summary
