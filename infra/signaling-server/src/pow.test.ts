@@ -4,6 +4,7 @@ import {
   calculatePowDifficulty,
   countLeadingZeroBits,
   createPowChallenge,
+  FixedWindowRateLimiter,
   verifyPowSolution,
 } from "./pow.js";
 
@@ -146,6 +147,16 @@ describe("signaling proof of work", () => {
         markUsed,
       }).ok
     ).toBe(false);
+  });
+
+  it("limits challenge minting with a fixed-window counter", () => {
+    const limiter = new FixedWindowRateLimiter(2, 1_000);
+
+    expect(limiter.check("client-a", 1_000)).toBe(true);
+    expect(limiter.check("client-a", 1_100)).toBe(true);
+    expect(limiter.check("client-a", 1_200)).toBe(false);
+    expect(limiter.check("client-a", 2_001)).toBe(true);
+    expect(limiter.check("client-b", 2_001)).toBe(true);
   });
 });
 

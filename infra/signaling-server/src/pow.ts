@@ -39,6 +39,11 @@ export interface PowPolicyInput {
   threatLevel: number;
 }
 
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+
 const MAX_CHALLENGE_LENGTH = 2048;
 const MAX_NONCE_LENGTH = 64;
 
@@ -113,7 +118,7 @@ export function verifyPowSolution(params: {
   }
 
   const now = params.now ?? Date.now();
-  if (payload.expiresAt < now) {
+  if (payload.expiresAt <= now) {
     return { ok: false, error: "Expired proof-of-work challenge" };
   }
 
@@ -127,12 +132,58 @@ export function verifyPowSolution(params: {
     return { ok: false, error: "Proof-of-work solution is below difficulty" };
   }
 
-  const replayKey = `${challenge}:${nonce}`;
+  const replayKey = createReplayKey(challenge, nonce);
   if (params.markUsed?.(replayKey, payload.expiresAt) === false) {
     return { ok: false, error: "Proof-of-work solution was already used" };
   }
 
   return { ok: true, difficulty: payload.difficulty };
+}
+
+export class FixedWindowRateLimiter {
+  private readonly entries = new Map<string, RateLimitEntry>();
+
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+    private readonly maxKeys = 50_000
+  ) {}
+
+  check(key: string, now = Date.now()): boolean {
+    if (this.limit <= 0) return true;
+
+    const existing = this.entries.get(key);
+    if (existing === undefined || existing.resetAt <= now) {
+      this.trim(now);
+      this.entries.set(key, { count: 1, resetAt: now + this.windowMs });
+      return true;
+    }
+
+    if (existing.count >= this.limit) {
+      return false;
+    }
+
+    existing.count++;
+    return true;
+  }
+
+  cleanup(now = Date.now()): void {
+    for (const [key, entry] of this.entries) {
+      if (entry.resetAt <= now) {
+        this.entries.delete(key);
+      }
+    }
+  }
+
+  private trim(now: number): void {
+    this.cleanup(now);
+    if (this.entries.size < this.maxKeys) return;
+
+    const oldestKey = this.entries.keys().next().value as string | undefined;
+    if (oldestKey !== undefined) {
+      this.entries.delete(oldestKey);
+    }
+  }
 }
 
 export function countLeadingZeroBits(bytes: Uint8Array): number {
@@ -203,6 +254,10 @@ function verifySignature(encodedPayload: string, signature: string, secret: stri
   }
 
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function createReplayKey(challenge: string, nonce: string): string {
+  return createHash("sha256").update(`${challenge}:${nonce}`).digest("base64url");
 }
 
 function clampInteger(value: number, min: number, max: number): number {

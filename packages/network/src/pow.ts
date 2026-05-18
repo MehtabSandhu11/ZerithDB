@@ -36,7 +36,12 @@ export async function fetchSignalingProofOfWork(params: {
   challengeUrl.searchParams.set("room", params.roomId);
   challengeUrl.searchParams.set("peer", params.peerId);
 
-  const res = await fetcher(challengeUrl.toString(), { method: "GET" });
+  let res: Response;
+  try {
+    res = await fetcher(challengeUrl.toString(), { method: "GET" });
+  } catch {
+    return null;
+  }
   if (res.status === 404) {
     return null;
   }
@@ -66,6 +71,7 @@ export async function fetchSignalingProofOfWork(params: {
   return solveHashcashChallenge({
     challenge: challenge.challenge,
     difficulty: challenge.difficulty,
+    expiresAt: challenge.expiresAt,
     maxIterations: params.maxIterations,
   });
 }
@@ -75,6 +81,7 @@ export async function solveHashcashChallenge(params: {
   difficulty: number;
   maxIterations?: number;
   yieldInterval?: number;
+  expiresAt?: number;
 }): Promise<ProofOfWorkSolveStats> {
   const difficulty = Math.max(0, Math.floor(params.difficulty));
   const maxIterations = params.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -83,6 +90,11 @@ export async function solveHashcashChallenge(params: {
   const startedAt = performance.now();
 
   for (let i = 0; i < maxIterations; i++) {
+    const shouldCheckExpiration = yieldInterval <= 0 || i % yieldInterval === 0;
+    if (params.expiresAt !== undefined && shouldCheckExpiration && Date.now() >= params.expiresAt) {
+      throw new Error("Proof-of-work challenge expired before it could be solved");
+    }
+
     const nonce = `${noncePrefix}-${i.toString(36)}`;
     const digest = sha256(textEncoder.encode(`${params.challenge}:${nonce}`));
 

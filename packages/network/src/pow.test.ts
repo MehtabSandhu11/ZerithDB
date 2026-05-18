@@ -52,6 +52,9 @@ describe("network proof of work", () => {
   it("returns null when proof of work is disabled or unsupported", async () => {
     const disabledFetch = vi.fn(async () => new Response(JSON.stringify({ required: false })));
     const missingFetch = vi.fn(async () => new Response(null, { status: 404 }));
+    const failedFetch = vi.fn(async () => {
+      throw new TypeError("network failed");
+    });
 
     await expect(
       fetchSignalingProofOfWork({
@@ -67,6 +70,14 @@ describe("network proof of work", () => {
         roomId: "room-a",
         peerId: "peer-a",
         fetchImpl: missingFetch as unknown as typeof fetch,
+      })
+    ).resolves.toBeNull();
+    await expect(
+      fetchSignalingProofOfWork({
+        baseUrl: "https://signal.example.test",
+        roomId: "room-a",
+        peerId: "peer-a",
+        fetchImpl: failedFetch as unknown as typeof fetch,
       })
     ).resolves.toBeNull();
   });
@@ -93,6 +104,18 @@ describe("network proof of work", () => {
         fetchImpl,
       })
     ).rejects.toThrow("already expired");
+  });
+
+  it("stops solving when a challenge expires mid-loop", async () => {
+    await expect(
+      solveHashcashChallenge({
+        challenge: "slow-challenge",
+        difficulty: 30,
+        expiresAt: Date.now() - 1,
+        yieldInterval: 0,
+        maxIterations: 10,
+      })
+    ).rejects.toThrow("expired");
   });
 
   it("counts leading zero bits exactly", () => {

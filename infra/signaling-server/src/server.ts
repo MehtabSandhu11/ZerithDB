@@ -4,6 +4,7 @@ import { verify, type JwtPayload } from "jsonwebtoken";
 import {
   calculatePowDifficulty,
   createPowChallenge,
+  FixedWindowRateLimiter,
   verifyPowSolution,
   type PowSolutionInput,
 } from "./pow.js";
@@ -18,6 +19,9 @@ const POW_MAX_DIFFICULTY = readIntegerEnv("POW_MAX_DIFFICULTY", 24);
 const POW_LOAD_STEP = readIntegerEnv("POW_LOAD_STEP", 25);
 const POW_THREAT_LEVEL = readIntegerEnv("POW_THREAT_LEVEL", 0);
 const POW_CHALLENGE_TTL_MS = readIntegerEnv("POW_CHALLENGE_TTL_MS", 60_000);
+const POW_CHALLENGE_RATE_LIMIT = readIntegerEnv("POW_CHALLENGE_RATE_LIMIT", 120);
+const POW_CHALLENGE_RATE_WINDOW_MS = readIntegerEnv("POW_CHALLENGE_RATE_WINDOW_MS", 60_000);
+const POW_TRUST_X_FORWARDED_FOR = process.env["POW_TRUST_X_FORWARDED_FOR"] === "true";
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const validLogLevels: LogLevel[] = ["debug", "info", "warn", "error"];
@@ -83,6 +87,10 @@ interface PollingSession {
 // sessionId → PollingSession
 const pollingSessions = new Map<string, PollingSession>();
 const usedPowSolutions = new Map<string, number>();
+const powChallengeRateLimiter = new FixedWindowRateLimiter(
+  POW_CHALLENGE_RATE_LIMIT,
+  POW_CHALLENGE_RATE_WINDOW_MS
+);
 
 /** How long a polling session can be inactive before cleanup (ms) */
 const SESSION_TIMEOUT_MS = 60_000;
@@ -99,6 +107,7 @@ setInterval(() => {
     }
   }
   cleanupUsedPowSolutions(now);
+  powChallengeRateLimiter.cleanup(now);
 }, 15_000);
 
 // ─── JWT Auth ───────────────────────────────────────────────────────────────
@@ -161,7 +170,7 @@ const server = createServer((req, res) => {
   // ─── Long-polling endpoints ───────────────────────────────────────────
 
   if (pathname === "/pow/challenge" && req.method === "GET") {
-    handlePowChallenge(url, res);
+    handlePowChallenge(req, url, res);
     return;
   }
 
@@ -600,7 +609,7 @@ function cleanupPollingSession(sessionId: string): void {
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
-function handlePowChallenge(url: URL, res: ServerResponse): void {
+function handlePowChallenge(req: IncomingMessage, url: URL, res: ServerResponse): void {
   const room = url.searchParams.get("room");
   const peer = url.searchParams.get("peer");
 
@@ -613,6 +622,12 @@ function handlePowChallenge(url: URL, res: ServerResponse): void {
   if (!POW_ENABLED) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ required: false }));
+    return;
+  }
+
+  if (!powChallengeRateLimiter.check(getPowRateLimitKey(req))) {
+    res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "60" });
+    res.end(JSON.stringify({ error: "Too many proof-of-work challenges" }));
     return;
   }
 
@@ -676,6 +691,17 @@ function readIntegerEnv(name: string, fallback: number): number {
   if (raw === undefined) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getPowRateLimitKey(req: IncomingMessage): string {
+  if (POW_TRUST_X_FORWARDED_FOR) {
+    const forwardedFor = req.headers["x-forwarded-for"];
+    const firstForwardedFor = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+    const clientIp = firstForwardedFor?.split(",")[0]?.trim();
+    if (clientIp) return clientIp;
+  }
+
+  return req.socket.remoteAddress ?? "unknown";
 }
 
 /**
